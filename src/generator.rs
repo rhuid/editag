@@ -3,8 +3,19 @@ use regex::Regex;
 use std::fs;
 use std::path::Path;
 use std::env;
+use std::process::Command;
 
-pub fn generate_template(output: Option<String>) -> Result<()> {
+pub fn generate_template(output: Option<String>, from_file: bool) -> Result<()> {
+    if from_file {
+        generate_from_files(output)
+    } else {
+        generate_from_directory(output)
+    }
+}
+
+// --- Directory-based generation ---
+
+fn generate_from_directory(output: Option<String>) -> Result<()> {
     let current_dir = env::current_dir()?;
     let dir_name = current_dir.file_name().unwrap_or_default().to_string_lossy().to_string();
 
@@ -101,6 +112,200 @@ pub fn generate_template(output: Option<String>) -> Result<()> {
     }
 
     Ok(())
+}
+
+// --- File-based generation ---
+
+fn generate_from_files(output: Option<String>) -> Result<()> {
+    let current_dir = env::current_dir()?;
+    let audio_extensions = ["flac", "mp3", "ape", "aac", "opus", "m4a", "wv", "wma"];
+
+    // First pass: read all metadata from all files
+    let mut all_tracks: Vec<(String, std::collections::HashMap<String, String>)> = Vec::new();
+
+    for entry in fs::read_dir(&current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                let ext_lower = ext.to_string_lossy().to_lowercase();
+                if audio_extensions.contains(&ext_lower.as_str()) {
+                    if let Some(file_name) = path.file_name() {
+                        let file_name_str = file_name.to_string_lossy().to_string();
+                        let metadata = read_metadata_from_file(&path)?;
+                        all_tracks.push((file_name_str, metadata));
+                    }
+                }
+            }
+        }
+    }
+
+    if all_tracks.is_empty() {
+        println!("No audio files found in current directory.");
+        return Ok(());
+    }
+
+    // Determine what goes in Global vs Track
+    let (global_fields, track_fields) = analyze_metadata(&all_tracks);
+
+    // Generate INI content
+    let mut content = String::new();
+
+    // Global section
+    content.push_str("[Global]\n");
+
+    // Global fields in order
+    let global_order = ["album", "albumartist", "date", "genre", "composer", "conductor", "comment", "publisher", "copyright"];
+    for field in &global_order {
+        if let Some(value) = global_fields.get(*field) {
+            if !value.is_empty() {
+                let key = field_to_ini_key(field);
+                content.push_str(&format!("{} = \"{}\"\n", key, value));
+            } else {
+                let key = field_to_ini_key(field);
+                content.push_str(&format!("{} = \n", key));
+            }
+        } else {
+            let key = field_to_ini_key(field);
+            content.push_str(&format!("{} = \n", key));
+        }
+    }
+    content.push('\n');
+
+    // Track sections
+    for (file_name, metadata) in &all_tracks {
+        // Get track number for header
+        let track_num = metadata.get("tracknumber").cloned().unwrap_or_default();
+        let track_header = if !track_num.is_empty() {
+            format!("[Track {}]", track_num)
+        } else {
+            "[Track]".to_string()
+        };
+        content.push_str(&format!("{}\n", track_header));
+
+        // File (always first)
+        content.push_str(&format!("File = \"{}\"\n", file_name));
+
+        // Title (always from track)
+        let title = metadata.get("title").cloned().unwrap_or_default();
+        content.push_str(&format!("Title = \"{}\"\n", title));
+
+        // Artist (always from track)
+        let artist = metadata.get("artist").cloned().unwrap_or_default();
+        content.push_str(&format!("Artist = \"{}\"\n", artist));
+
+        // Disc (always from track)
+        let disc = metadata.get("discnumber").cloned().unwrap_or_default();
+        if !disc.is_empty() {
+            content.push_str(&format!("Disc = \"{}\"\n", disc));
+        }
+
+        // Track-level overrides for fields that differ
+        let override_fields = ["album", "albumartist", "date", "genre", "composer", "conductor", "comment", "publisher", "copyright"];
+        for field in &override_fields {
+            if let Some(track_value) = metadata.get(*field) {
+                if let Some(global_value) = global_fields.get(*field) {
+                    if track_value != global_value && !track_value.is_empty() {
+                        let key = field_to_ini_key(field);
+                        content.push_str(&format!("{} = \"{}\"\n", key, track_value));
+                    }
+                } else if !track_value.is_empty() {
+                    let key = field_to_ini_key(field);
+                    content.push_str(&format!("{} = \"{}\"\n", key, track_value));
+                }
+            }
+        }
+
+        content.push('\n');
+    }
+
+    // Write output file
+    let output_path = output.unwrap_or_else(|| "tags.ini".to_string());
+    fs::write(&output_path, content)?;
+    println!("Generated template from file metadata: {}", output_path);
+    println!("Found {} tracks", all_tracks.len());
+
+    Ok(())
+}
+
+fn read_metadata_from_file(path: &Path) -> Result<std::collections::HashMap<String, String>> {
+    let mut metadata = std::collections::HashMap::new();
+
+    // Fields to read from kid3-cli
+    let fields = [
+        "album", "albumartist", "date", "genre", "composer",
+        "conductor", "comment", "publisher", "copyright",
+        "title", "artist", "tracknumber", "discnumber"
+    ];
+
+    for field in &fields {
+        let output = Command::new("kid3-cli")
+            .arg(path)
+            .arg("-c")
+            .arg(format!("get {}", field))
+            .output()?;
+
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !value.is_empty() {
+                metadata.insert(field.to_string(), value);
+            }
+        }
+    }
+
+    Ok(metadata)
+}
+
+fn analyze_metadata(all_tracks: &[(String, std::collections::HashMap<String, String>)]) -> (std::collections::HashMap<String, String>, Vec<std::collections::HashMap<String, String>>) {
+    let mut global_fields = std::collections::HashMap::new();
+    let mut track_fields = Vec::new();
+
+    // Fields that can be Global or Track
+    let analyzable_fields = [
+        "album", "albumartist", "date", "genre", "composer",
+        "conductor", "comment", "publisher", "copyright"
+    ];
+
+    for field in &analyzable_fields {
+        let values: Vec<String> = all_tracks.iter()
+            .filter_map(|(_, meta)| meta.get(*field).cloned())
+            .filter(|v| !v.is_empty())
+            .collect();
+
+        if values.is_empty() {
+            continue;
+        }
+
+        // Check if all values are the same
+        let all_same = values.iter().all(|v| v == &values[0]);
+
+        if all_same {
+            global_fields.insert(field.to_string(), values[0].clone());
+        }
+    }
+
+    // Return both maps without Result wrapper
+    (global_fields, track_fields)
+}
+
+fn field_to_ini_key(field: &str) -> String {
+    match field {
+        "album" => "Album".to_string(),
+        "albumartist" => "Album Artist".to_string(),
+        "date" => "Date".to_string(),
+        "genre" => "Genre".to_string(),
+        "composer" => "Composer".to_string(),
+        "conductor" => "Conductor".to_string(),
+        "comment" => "Comment".to_string(),
+        "publisher" => "Publisher".to_string(),
+        "copyright" => "Copyright".to_string(),
+        "title" => "Title".to_string(),
+        "artist" => "Artist".to_string(),
+        "tracknumber" => "Track Number".to_string(),
+        "discnumber" => "Disc Number".to_string(),
+        _ => field.to_string(),
+    }
 }
 
 fn detect_disc_directory(dir: &Path) -> (Option<u32>, Option<&Path>) {

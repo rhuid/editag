@@ -24,8 +24,8 @@ fn main() -> anyhow::Result<()> {
                 println!("Metadata applied successfully.");
             }
         }
-        Commands::Generate { output } => {
-            generate_template(output)?;
+        Commands::Generate { output, file } => {
+            generate_template(output, file)?;
         }
     }
 

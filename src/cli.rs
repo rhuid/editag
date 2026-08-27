@@ -25,8 +25,12 @@ pub enum Commands {
     /// Generate template config from current directory
     #[command(name = "gen", visible_alias = "generate")]
     Generate {
-        /// Output config file path (default: tags.ini)
+        /// Output config file path
         #[arg(short, long, default_value = "tags.ini")]
         output: Option<String>,
+
+        /// Generate from embedded metadata in audio files instead of directory structure
+        #[arg(short, long)]
+        file: bool,
     },
 }
