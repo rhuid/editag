@@ -22,11 +22,15 @@ pub struct TrackMeta {
     pub title: Option<String>,
     pub artist: Vec<String>,
     pub disc: Option<u8>,
+    pub album: Option<String>,
+    pub album_artist: Vec<String>,
     pub composer: Option<String>,
     pub genre: Option<String>,
     pub date: Option<String>,
     pub comment: Option<String>,
     pub conductor: Option<String>,
+    pub publisher: Option<String>,
+    pub copyright: Option<String>,
 }
 
 impl Default for TrackMeta {
@@ -37,11 +41,15 @@ impl Default for TrackMeta {
             title: None,
             artist: Vec::new(),
             disc: None,
+            album: None,
+            album_artist: Vec::new(),
             composer: None,
             genre: None,
             date: None,
             comment: None,
             conductor: None,
+            publisher: None,
+            copyright: None,
         }
     }
 }
@@ -147,11 +155,20 @@ pub fn parse_config(path: &Path) -> anyhow::Result<(GlobalMeta, Vec<TrackMeta>)>
                         track.disc = Some(num);
                     }
                 }
+                "album" => track.album = Some(value),
+                "albumartist" => {
+                    if has_value {
+                        track.album_artist.push(value);
+                    }
+                    // If no value, skip entirely
+                }
                 "composer" => track.composer = Some(value),
                 "genre" => track.genre = Some(value),
                 "date" => track.date = Some(value),
                 "comment" => track.comment = Some(value),
                 "conductor" => track.conductor = Some(value),
+                "publisher" => track.publisher = Some(value),
+                "copyright" => track.copyright = Some(value),
                 _ => {} // Ignore unknown keys in track
             }
         } else {
